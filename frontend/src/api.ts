@@ -1,10 +1,14 @@
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.detail || `Request failed (${response.status})`)
+    const detail = body?.detail
+    const message = typeof detail === 'string' ? detail : Array.isArray(detail)
+      ? detail.map((item: { loc?: string[]; msg?: string }) => `${item.loc?.slice(1).join(' ') || 'Input'}: ${item.msg || 'Invalid value'}`).join('; ')
+      : detail?.message || `Request failed (${response.status})`
+    throw new Error(message)
   }
   return response.json() as Promise<T>
 }

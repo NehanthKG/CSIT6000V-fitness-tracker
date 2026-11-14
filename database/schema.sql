@@ -50,3 +50,41 @@ CREATE TABLE IF NOT EXISTS workout_logs (
   notes TEXT NOT NULL DEFAULT '',
   completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Additive v2 tables. Existing profiles/plans are migrated in app/db.py.
+CREATE TABLE IF NOT EXISTS workflows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  status TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  result_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id INTEGER REFERENCES workflows(id),
+  agent_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  output_json TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS pose_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exercise TEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+  text TEXT NOT NULL,
+  source TEXT,
+  agent_run_id INTEGER REFERENCES agent_runs(id),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_runs_workflow ON agent_runs(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_workouts_completed ON workout_logs(completed_at);

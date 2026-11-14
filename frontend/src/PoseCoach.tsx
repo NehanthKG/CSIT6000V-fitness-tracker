@@ -1,132 +1,266 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, Camera, Check, LoaderCircle, Play, RotateCcw, Upload } from 'lucide-react'
+import { AlertCircle, Camera, CameraOff, Check, LoaderCircle, Pause, Play, RotateCcw, ShieldCheck, Sparkles, Upload } from 'lucide-react'
 import { DrawingUtils, FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision'
+import { api } from './api'
+import { PoseAnalyzer } from './pose/analysis'
+import type { Move, Reading } from './pose/analysis'
+import './PoseCoach.css'
 
-type Move = 'Squat' | 'Bicep curl' | 'Arm circles'
-type Props = { onLog: (exercise: string, minutes: number, effort: number, notes: string) => Promise<void> }
-type Point = { x: number; y: number; visibility?: number }
-
-function angle(a: Point, b: Point, c: Point) {
-  const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x)
-  const degrees = Math.abs((radians * 180) / Math.PI)
-  return degrees > 180 ? 360 - degrees : degrees
+type Props = {
+  onLog: (exercise: string, minutes: number, effort: number, notes: string) => Promise<void>
+  onSessionSaved?: () => void | Promise<void>
 }
+type AgentFeedback = { source: string; output: { summary?: string; observations?: string[]; suggestions?: string[]; confidence_note?: string } }
+const MOVES: Move[] = ['Squat', 'Bicep curl', 'Arm circles']
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
 
-export default function PoseCoach({ onLog }: Props) {
+export default function PoseCoach({ onLog, onSessionSaved }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const taskRef = useRef<PoseLandmarker | null>(null)
-  const rafRef = useRef<number>(0)
-  const previousAngle = useRef(180)
-  const previousCircle = useRef<number | null>(null)
-  const circleTurns = useRef(0)
-  const phase = useRef('up')
+  const initialization = useRef<Promise<PoseLandmarker | null> | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const objectUrl = useRef('')
+  const rafRef = useRef(0)
+  const mounted = useRef(true)
+  const intent = useRef(0)
+  const analyzerRef = useRef(new PoseAnalyzer('Squat'))
+  const sourceRef = useRef<'webcam' | 'upload' | null>(null)
+  const lastFrame = useRef(-1)
+  const lastInference = useRef(0)
+  const lastUi = useRef(0)
+  const runningRef = useRef(false)
+  const savedIdRef = useRef<number | null>(null)
+  const savedSummaryRef = useRef<ReturnType<PoseAnalyzer['summary']> | null>(null)
   const [exercise, setExercise] = useState<Move>('Squat')
-  const [videoUrl, setVideoUrl] = useState('')
+  const [source, setSource] = useState<'webcam' | 'upload' | null>(null)
   const [fileName, setFileName] = useState('')
   const [loading, setLoading] = useState(false)
+  const [cameraPending, setCameraPending] = useState(false)
+  const [cameraActive, setCameraActive] = useState(false)
+  const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
-  const [feedback, setFeedback] = useState('Choose a clip to begin. Your video stays on this device.')
-  const [reps, setReps] = useState(0)
-  const [duration, setDuration] = useState(0)
+  const [reading, setReading] = useState<Reading>(analyzerRef.current.reading)
+  const [clipTime, setClipTime] = useState(0)
+  const [clipDuration, setClipDuration] = useState(0)
+  const [aspect, setAspect] = useState(16 / 9)
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [effort, setEffort] = useState(5)
+  const [feedback, setFeedback] = useState<AgentFeedback | null>(null)
+  const [feedbackBusy, setFeedbackBusy] = useState(false)
+  const [feedbackError, setFeedbackError] = useState('')
 
-  useEffect(() => () => {
+  function pause() {
+    intent.current++
+    runningRef.current = false
     cancelAnimationFrame(rafRef.current)
-    taskRef.current?.close()
-    if (videoUrl) URL.revokeObjectURL(videoUrl)
-  }, [videoUrl])
-
-  async function handleFile(file?: File) {
-    if (!file) return
-    if (!file.type.startsWith('video/')) { setError('Choose a video file.'); return }
-    if (videoUrl) URL.revokeObjectURL(videoUrl)
-    setVideoUrl(URL.createObjectURL(file)); setFileName(file.name); setError(''); setFeedback('Video ready. Press play to analyze movement.'); setReps(0); setSaved(false)
-    previousAngle.current = 180; previousCircle.current = null; circleTurns.current = 0; phase.current = 'up'
+    videoRef.current?.pause()
+    if (mounted.current) { setRunning(false); setReading({ ...analyzerRef.current.reading }) }
   }
 
-  async function initialize() {
-    if (taskRef.current) return taskRef.current
-    setLoading(true); setError('')
-    try {
-      const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm')
-      taskRef.current = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', delegate: 'GPU' },
-        runningMode: 'VIDEO', numPoses: 1,
-      })
-      return taskRef.current
-    } catch {
-      setError('Pose model could not load. Check your internet connection and try again.')
-      return null
-    } finally { setLoading(false) }
+  function stopCamera(clearSource = true) {
+    intent.current++
+    pause()
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    streamRef.current = null
+    if (clearSource && videoRef.current) videoRef.current.srcObject = null
+    if (clearSource && sourceRef.current === 'webcam') { sourceRef.current = null; setSource(null) }
+    setCameraActive(false); setCameraPending(false)
   }
 
-  function analyze(landmarks: Point[]) {
-    const left = landmarks[23]
-    const ankle = landmarks[27], knee = landmarks[25], hip = landmarks[23], elbow = landmarks[13], shoulder = landmarks[11], wrist = landmarks[15]
-    if (exercise === 'Squat' && left && knee && ankle) {
-      const kneeAngle = angle(hip, knee, ankle)
-      if (kneeAngle < 95 && phase.current === 'up') { phase.current = 'down'; setFeedback('Good depth. Press through your whole foot to stand.') }
-      if (kneeAngle > 155 && phase.current === 'down') { phase.current = 'up'; setReps(r => r + 1); setFeedback('Nice rep. Keep your chest comfortable and knees tracking over toes.') }
-      if (Math.abs(knee.x - ankle.x) > 0.16) setFeedback('Try keeping your knee tracking in line with your foot.')
-      previousAngle.current = kneeAngle
-    } else if (exercise === 'Bicep curl' && shoulder && elbow && wrist) {
-      const elbowAngle = angle(shoulder, elbow, wrist)
-      if (elbowAngle < 55 && phase.current === 'up') { phase.current = 'down'; setFeedback('At the top. Lower the weight slowly with control.') }
-      if (elbowAngle > 145 && phase.current === 'down') { phase.current = 'up'; setReps(r => r + 1); setFeedback('Nice rep. Keep your elbow close to your side.') }
-      if (Math.abs(elbow.x - shoulder.x) > 0.12) setFeedback('Keep your upper arm close to your body.')
-      previousAngle.current = elbowAngle
-    } else if (exercise === 'Arm circles' && shoulder && wrist) {
-      const theta = Math.atan2(wrist.y - shoulder.y, wrist.x - shoulder.x)
-      if (previousCircle.current !== null) {
-        let delta = theta - previousCircle.current
-        if (delta > Math.PI) delta -= 2 * Math.PI
-        if (delta < -Math.PI) delta += 2 * Math.PI
-        circleTurns.current += delta
-        if (Math.abs(circleTurns.current) > Math.PI * 2) { setReps(r => r + 1); circleTurns.current = 0; setFeedback('Circle complete. Keep the movement smooth and controlled.') }
-      }
-      previousCircle.current = theta
-      setFeedback('Make slow, comfortable circles with a relaxed shoulder.')
+  function resetSession(move: Move = exercise) {
+    pause()
+    analyzerRef.current = new PoseAnalyzer(move)
+    setReading({ ...analyzerRef.current.reading })
+    lastFrame.current = -1
+    savedIdRef.current = null; savedSummaryRef.current = null
+    setSaved(false); setFeedback(null); setFeedbackError(''); setError('')
+  }
+
+  useEffect(() => {
+    mounted.current = true
+    const pageHidden = () => { if (document.hidden) pause() }
+    document.addEventListener('visibilitychange', pageHidden)
+    return () => {
+      mounted.current = false; intent.current++
+      cancelAnimationFrame(rafRef.current)
+      streamRef.current?.getTracks().forEach(track => track.stop())
+      if (videoRef.current) videoRef.current.srcObject = null
+      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current)
+      taskRef.current?.close(); taskRef.current = null
+      document.removeEventListener('visibilitychange', pageHidden)
     }
+  }, [])
+
+  async function initialize(): Promise<PoseLandmarker | null> {
+    if (taskRef.current) return taskRef.current
+    if (initialization.current) return initialization.current
+    setLoading(true); setError('')
+    initialization.current = (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm')
+        let task: PoseLandmarker
+        const options = { runningMode: 'VIDEO' as const, numPoses: 1, minPoseDetectionConfidence: 0.6, minPosePresenceConfidence: 0.6, minTrackingConfidence: 0.6 }
+        try { task = await PoseLandmarker.createFromOptions(vision, { ...options, baseOptions: { modelAssetPath: MODEL, delegate: 'GPU' } }) }
+        catch { task = await PoseLandmarker.createFromOptions(vision, { ...options, baseOptions: { modelAssetPath: MODEL, delegate: 'CPU' } }) }
+        if (!mounted.current) { task.close(); return null }
+        taskRef.current = task
+        return task
+      } catch {
+        if (mounted.current) setError('The pose model could not load. Check your connection and try again. Model files download once from Google and jsDelivr; video frames stay here.')
+        return null
+      } finally {
+        initialization.current = null
+        if (mounted.current) setLoading(false)
+      }
+    })()
+    return initialization.current
   }
 
-  async function start() {
-    const video = videoRef.current, canvas = canvasRef.current
-    if (!video || !canvas || !videoUrl) return
-    const task = await initialize()
-    if (!task) return
-    await video.play()
-    setDuration(Math.max(1, Math.round(video.duration / 60)))
-    const draw = () => {
-      if (!video || !canvas || video.paused || video.ended) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      canvas.width = video.clientWidth * devicePixelRatio; canvas.height = video.clientHeight * devicePixelRatio
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      const result = task.detectForVideo(video, performance.now())
-      if (result.landmarks[0]) {
-        const painter = new DrawingUtils(ctx)
-        painter.drawConnectors(result.landmarks[0], PoseLandmarker.POSE_CONNECTIONS, { color: '#a5d96b', lineWidth: 3 })
-        painter.drawLandmarks(result.landmarks[0], { color: '#f9fcf5', fillColor: '#426b29', lineWidth: 1, radius: 3 })
-        analyze(result.landmarks[0] as Point[])
+  function startLoop() {
+    cancelAnimationFrame(rafRef.current)
+    runningRef.current = true; setRunning(true)
+    const draw = (now: number) => {
+      const video = videoRef.current, canvas = canvasRef.current, task = taskRef.current
+      if (!mounted.current || !runningRef.current || !video || !canvas || !task) return
+      if (video.paused || video.ended) { pause(); return }
+      // Inference is synchronous; cap at 15 fps and never process a frame twice.
+      if (video.readyState >= 2 && video.currentTime !== lastFrame.current && now - lastInference.current >= 66) {
+        lastFrame.current = video.currentTime; lastInference.current = now
+        try {
+          const result = task.detectForVideo(video, now)
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) { canvas.width = video.videoWidth; canvas.height = video.videoHeight }
+            ctx.clearRect(0, 0, canvas.width, canvas.height)
+            const landmarks = result.landmarks[0]
+            if (landmarks) {
+              const visible = landmarks.map(p => ({ ...p, visibility: (p.visibility ?? 0) >= 0.65 ? p.visibility : 0 }))
+              const painter = new DrawingUtils(ctx)
+              painter.drawConnectors(visible, PoseLandmarker.POSE_CONNECTIONS.filter(c => visible[c.start].visibility >= 0.65 && visible[c.end].visibility >= 0.65), { color: '#badb88', lineWidth: Math.max(2, canvas.width / 300) })
+              painter.drawLandmarks(visible.filter(p => p.visibility >= 0.65), { color: '#ffffff', fillColor: '#6e9b51', lineWidth: 1, radius: Math.max(3, canvas.width / 240) })
+              analyzerRef.current.sample(landmarks, result.worldLandmarks[0], video.videoWidth / video.videoHeight, video.currentTime * 1000)
+            } else analyzerRef.current.missing()
+          }
+          if (now - lastUi.current > 150) { setReading({ ...analyzerRef.current.reading }); setClipTime(video.currentTime); lastUi.current = now }
+        } catch {
+          pause(); setError('Pose tracking stopped unexpectedly. Reset the session and try again, or choose another video.'); return
+        }
       }
       rafRef.current = requestAnimationFrame(draw)
     }
-    draw()
+    rafRef.current = requestAnimationFrame(draw)
   }
 
-  return <section className="pose-card">
-    <div className="section-heading"><div><span className="eyebrow">MOVE WITH CONFIDENCE</span><h2>Form check</h2><p>On-device pose feedback for your movement practice.</p></div><span className="privacy-tag"><Check size={13} /> Video stays private</span></div>
-    <div className="pose-controls">
-      <label className="field compact"><span>Exercise</span><select value={exercise} onChange={e => { setExercise(e.target.value as Move); setReps(0); phase.current = 'up'; previousCircle.current = null }}><option>Squat</option><option>Bicep curl</option><option>Arm circles</option></select></label>
-      <label className="upload-button"><Upload size={16} /> {fileName ? 'Change clip' : 'Choose video'}<input type="file" accept="video/*" onChange={e => handleFile(e.target.files?.[0])} /></label>
-      <span className="file-name">{fileName || 'MP4, MOV, or WebM'}</span>
+  async function play() {
+    if (saving || saved || !sourceRef.current) return
+    const currentVideo = videoRef.current
+    if (currentVideo?.ended) { resetSession(); currentVideo.currentTime = 0 }
+    const request = ++intent.current
+    const task = await initialize()
+    if (!task || request !== intent.current || !mounted.current) return
+    const video = videoRef.current
+    if (!video) return
+    try {
+      await video.play()
+      if (request !== intent.current || !mounted.current) { video.pause(); return }
+      startLoop()
+    } catch { setError('This video could not play. Try an MP4, WebM, or a codec supported by your browser.') }
+  }
+
+  async function startCamera() {
+    if (cameraPending || saving) return
+    stopCamera(); resetSession()
+    const request = ++intent.current
+    setCameraPending(true)
+    try {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires localhost or HTTPS and a supported browser.')
+      const task = await initialize()
+      if (!task || request !== intent.current) return
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      if (!mounted.current || request !== intent.current) { stream.getTracks().forEach(track => track.stop()); return }
+      if (objectUrl.current) { URL.revokeObjectURL(objectUrl.current); objectUrl.current = '' }
+      streamRef.current = stream
+      setCameraActive(true)
+      const video = videoRef.current
+      if (!video) { stream.getTracks().forEach(track => track.stop()); return }
+      video.removeAttribute('src'); video.srcObject = stream
+      sourceRef.current = 'webcam'; setSource('webcam'); setFileName(''); setClipDuration(0)
+      await video.play()
+      if (request !== intent.current) return
+      startLoop()
+    } catch (e) {
+      if (request !== intent.current || !mounted.current) return
+      stopCamera()
+      const name = e instanceof Error ? e.name : ''
+      setError(name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access in your browser, or choose a video clip.' : name === 'NotFoundError' ? 'No camera was found. Connect a camera or choose a video clip.' : e instanceof Error && e.message.includes('requires') ? e.message : 'The camera could not start. Check that another app is not using it, or choose a video.')
+    } finally { if (mounted.current) setCameraPending(false) }
+  }
+
+  function chooseFile(file?: File) {
+    if (!file || saving) return
+    if (file.type && !file.type.startsWith('video/')) { setError('Choose a video file, such as MP4, MOV, or WebM.'); return }
+    if (file.size > 500 * 1024 * 1024) { setError('Choose a clip smaller than 500 MB.'); return }
+    stopCamera(); resetSession()
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current)
+    const url = URL.createObjectURL(file); objectUrl.current = url
+    const video = videoRef.current
+    if (video) { video.srcObject = null; video.src = url; video.load() }
+    sourceRef.current = 'upload'; setSource('upload'); setFileName(file.name); setClipTime(0); setClipDuration(0)
+  }
+
+  async function saveSession() {
+    if (saving || saved || !sourceRef.current) return
+    pause(); setSaving(true); setError('')
+    try {
+      const summary = savedSummaryRef.current ?? analyzerRef.current.summary(sourceRef.current)
+      if (summary.analyzed_frames < 10) throw new Error('Track at least 10 confident frames before saving a session.')
+      if (savedIdRef.current === null) {
+        const result = await api.post<{ id: number }>('/api/pose-sessions', summary)
+        savedIdRef.current = result.id; savedSummaryRef.current = summary
+      }
+      await onLog(summary.exercise, Math.max(1, Math.ceil(summary.duration_seconds / 60)), effort, `${summary.reps} reps; ${Math.round(summary.average_confidence * 100)}% landmark confidence; ${summary.range_of_motion.min}–${summary.range_of_motion.max}° angle range; pose session #${savedIdRef.current}`)
+      if (mounted.current) { setSaved(true); void onSessionSaved?.() }
+    } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : 'The session could not be saved. Please retry.') }
+    finally { if (mounted.current) setSaving(false) }
+  }
+
+  async function getFeedback() {
+    if (savedIdRef.current === null || feedbackBusy) return
+    setFeedbackBusy(true); setFeedbackError('')
+    try {
+      const result = await api.post<AgentFeedback>('/api/agents/exercise_feedback/run', { pose_session_id: savedIdRef.current })
+      if (mounted.current) setFeedback(result)
+    } catch (e) { if (mounted.current) setFeedbackError(e instanceof Error ? e.message : 'Feedback could not be loaded. Try again.') }
+    finally { if (mounted.current) setFeedbackBusy(false) }
+  }
+
+  const sessionFrozen = saving || savedIdRef.current !== null
+  return <section className="pose-card pose-tracker" aria-label="Pose estimation tracker">
+    <div className="section-heading"><div><span className="eyebrow">MOVE WITH CONFIDENCE</span><h2>Your form, in focus</h2><p>Track repetitions and movement with your camera or a video clip.</p></div><span className="pose-privacy"><ShieldCheck size={14} /> Video stays on your device</span></div>
+    <div className="tracker-controls">
+      <label className="field compact"><span>Movement</span><select value={exercise} disabled={saving || feedbackBusy} onChange={e => { const move = e.target.value as Move; setExercise(move); resetSession(move) }}>{MOVES.map(move => <option key={move}>{move}</option>)}</select></label>
+      {source === 'webcam' && cameraActive ? <button className="quiet-button tracker-source-button" disabled={saving} onClick={() => stopCamera(false)}><CameraOff size={16} /> Stop camera</button> : <button className="quiet-button tracker-source-button" disabled={cameraPending || loading || saving || feedbackBusy} onClick={() => void startCamera()}>{cameraPending ? <LoaderCircle size={16} className="spin" /> : <Camera size={16} />} {cameraPending ? 'Starting camera…' : 'Use camera'}</button>}
+      <label className={`upload-button tracker-upload ${saving || feedbackBusy ? 'disabled' : ''}`}><Upload size={16} /> Choose clip<input type="file" accept="video/*" aria-label="Choose a movement video" disabled={saving || feedbackBusy} onChange={e => { chooseFile(e.target.files?.[0]); e.target.value = '' }} /></label>
+      <span className="tracker-file" title={fileName}>{fileName || (source === 'webcam' ? 'Live camera · audio off' : 'MP4, MOV, WebM · up to 500 MB')}</span>
     </div>
-    <div className="video-stage">
-      {videoUrl ? <><video ref={videoRef} src={videoUrl} controls playsInline onPlay={start} /><canvas ref={canvasRef} className="pose-overlay" /></> : <div className="video-empty"><div className="camera-orbit"><Camera size={28} /></div><strong>Bring a movement clip</strong><span>Pick a short video from your device to see pose landmarks and gentle form cues.</span><label className="primary-button small"><Upload size={15} /> Select video<input type="file" accept="video/*" onChange={e => handleFile(e.target.files?.[0])} /></label></div>}
-      {loading && <div className="video-loading"><LoaderCircle className="spin" /> Loading pose model…</div>}
+    <div className={`tracker-stage ${source ? 'has-video' : ''}`}>
+      <div className="tracker-video-frame" style={{ aspectRatio: aspect, width: `min(100%, ${aspect * 500}px)`, display: source ? undefined : 'none' }}>
+        <video ref={videoRef} muted playsInline preload="metadata" aria-label={source === 'webcam' ? 'Live movement camera' : 'Movement clip'} onLoadedMetadata={() => { const v = videoRef.current; if (v?.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight); if (v && Number.isFinite(v.duration)) setClipDuration(v.duration) }} onEnded={pause} onError={() => { if (sourceRef.current) { pause(); setError('This video format could not be opened. Try an MP4 or WebM clip.') } }} />
+        <canvas ref={canvasRef} className="tracker-overlay" aria-hidden="true" />
+        <span className={`tracker-live ${running ? 'is-running' : ''}`}><i />{running ? 'TRACKING' : 'PAUSED'}</span>
+      </div>
+      {!source && <div className="tracker-empty"><div className="camera-orbit"><Camera size={29} /></div><strong>Make room to move.</strong><span>Position your whole body in frame for squats.<br />Face sideways for curls, and face the camera for circles.</span><button className="primary-button" disabled={cameraPending || loading} onClick={() => void startCamera()}><Camera size={15} /> Start your camera</button></div>}
+      {loading && <div className="tracker-loading" role="status"><LoaderCircle className="spin" size={24} /><strong>Preparing your pose model…</strong><span>The first load may take a moment.</span></div>}
     </div>
-    {error && <div className="inline-error"><AlertCircle size={16} />{error}</div>}
-    <div className="pose-bottom"><div className="rep-count"><strong>{String(reps).padStart(2, '0')}</strong><span>reps detected</span></div><div className="form-feedback"><span className="live-dot" /> <span>{feedback}</span></div><button className="quiet-button" onClick={() => { setReps(0); phase.current = 'up'; circleTurns.current = 0; setSaved(false) }}><RotateCcw size={15} /> Reset</button><button className="primary-button small" disabled={!reps || saved} onClick={async () => { await onLog(exercise, duration || 5, 5, `${reps} reps detected by on-device pose check`); setSaved(true) }}>{saved ? <Check size={15} /> : <Play size={14} />}{saved ? 'Logged' : 'Log session'}</button></div>
+    {source && <div className="tracker-playback"><button className="primary-button small" disabled={loading || sessionFrozen || (source === 'webcam' && !cameraActive)} onClick={() => running ? pause() : void play()}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : source === 'upload' && clipTime >= clipDuration && clipDuration > 0 ? 'Replay' : 'Start tracking'}</button>{source === 'upload' && <><input aria-label="Video position; seeking starts a new session" type="range" min={0} max={clipDuration || 1} step={0.1} value={Math.min(clipTime, clipDuration || 1)} disabled={!clipDuration || saving || feedbackBusy} onChange={e => { resetSession(); const seconds = Number(e.target.value); if (videoRef.current) videoRef.current.currentTime = seconds; setClipTime(seconds) }} /><span>{clock(clipTime)} / {clock(clipDuration)}</span></>}<span className="tracker-angle-note">{exercise === 'Arm circles' ? 'Wrist rotation · face camera' : 'Joint angle · side view recommended'}</span></div>}
+    {error && <div className="inline-error" role="alert"><AlertCircle size={16} />{error}</div>}
+    <div className="tracker-metrics" aria-label="Movement measurements"><div><strong>{String(reading.reps).padStart(2, '0')}</strong><span>repetitions</span></div><div><strong>{reading.angle === null ? '—' : `${reading.angle}°`}</strong><span>{exercise === 'Squat' ? 'knee angle' : exercise === 'Bicep curl' ? 'elbow angle' : 'wrist rotation'}</span></div><div><strong>{reading.confidence ? `${Math.round(reading.confidence * 100)}%` : '—'}</strong><span>joint visibility</span></div><div><strong>{clock(reading.seconds)}</strong><span>confident tracking</span></div></div>
+    <div className="tracker-cue" role="status"><span className={`live-dot ${!running ? 'inactive' : ''}`} /><p>{reading.feedback}</p>{reading.side && <span className="tracker-side">{reading.side} side</span>}</div>
+    <div className="tracker-actions"><button className="quiet-button" disabled={saving || feedbackBusy} onClick={() => resetSession()}><RotateCcw size={14} /> New session</button><label className="tracker-effort">Effort <select value={effort} disabled={saving || saved} onChange={e => setEffort(Number(e.target.value))} aria-label="Perceived effort from 1 to 10">{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}/10</option>)}</select></label><button className="primary-button small" disabled={reading.frames < 10 || saving || saved || feedbackBusy} onClick={() => void saveSession()}>{saving ? <LoaderCircle size={14} className="spin" /> : saved ? <Check size={14} /> : <Check size={14} />}{saving ? 'Saving…' : saved ? 'Session saved' : savedIdRef.current ? 'Retry workout log' : 'Save & log session'}</button></div>
+    {saved && <div className="tracker-agent"><div className="tracker-agent-heading"><div><Sparkles size={16} /><strong>Exercise feedback agent</strong></div><button className="text-link" disabled={feedbackBusy} onClick={() => void getFeedback()}>{feedbackBusy ? 'Reviewing…' : feedback ? 'Review again' : 'Review this session'} {!feedbackBusy && <Sparkles size={13} />}</button></div>{feedback && <div className="tracker-agent-result"><span className="source-pill">{feedback.source === 'local_fallback' ? 'LOCAL REVIEW' : 'AI REVIEW'}</span><p>{feedback.output.summary}</p>{feedback.output.observations?.length ? <ul>{feedback.output.observations.map((text, i) => <li key={i}>{text}</li>)}</ul> : null}{feedback.output.suggestions?.length ? <ul>{feedback.output.suggestions.map((text, i) => <li key={i}>{text}</li>)}</ul> : null}<small>{feedback.output.confidence_note}</small></div>}{feedbackError && <p className="inline-error" role="alert">{feedbackError}</p>}</div>}
+    <p className="tracker-disclaimer">Repetitions are estimates from visible joints. Camera position affects accuracy. Saving shares session measurements and up to eight numerical landmark snapshots with the backend and feedback agent.</p>
   </section>
 }

@@ -12,3 +12,11 @@ INSERT OR IGNORE INTO recipes(name, calories, protein_g, cost, dietary_tags, ing
 ('Peanut tofu stir-fry', 490, 25, 3.60, 'vegetarian, dairy free', 'Tofu, broccoli, brown rice, peanut sauce'),
 ('Egg and avocado toast', 410, 22, 2.90, 'vegetarian', 'Eggs, wholegrain bread, avocado, tomato'),
 ('Lentil tomato soup', 430, 24, 2.40, 'vegan, dairy free, budget', 'Lentils, tomatoes, carrots, onion, vegetable stock');
+
+-- Extra catalog options are inserted without changing existing records.
+INSERT OR IGNORE INTO exercises(name,category,equipment,difficulty,duration_minutes,instructions) VALUES
+('Walking','Cardio','bodyweight','beginner',10,'Walk at a comfortable conversational pace.'),
+('Standing calf raise','Lower body','bodyweight','beginner',5,'Hold a stable support and raise your heels slowly.');
+INSERT OR IGNORE INTO recipes(name,calories,protein_g,cost,dietary_tags,ingredients) VALUES
+('Chickpea rice bowl',460,19,2.10,'vegan, vegetarian, dairy free, gluten free, nut free','Chickpeas, rice, carrots, spinach, olive oil'),
+('Oat banana bowl',380,12,1.40,'vegan, vegetarian, dairy free, nut free','Certified gluten-free oats, banana, water, chia seeds');

@@ -14,3 +14,6 @@ frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/*.tsbuildinfo
+backend/.env
+**/__pycache__/
+.pytest_cache/
