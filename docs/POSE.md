@@ -75,3 +75,44 @@ node --test frontend/src/pose/analysis.test.mjs
 The app itself builds with Node.js 20+, but these tests use Node's newer built-in TypeScript loading. Real webcam permission, GPU/CPU model loading, skeleton alignment, clip decoding, and accuracy on representative people still need browser/device validation. Use the manual checklist in [QA.md](QA.md).
 
 Official API references: [Pose Landmarker for web](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/web_js), [PoseLandmarker JavaScript API](https://developers.google.com/edge/api/mediapipe/js/tasks-vision.poselandmarker).
+
+## Integrated bilateral counter
+
+The browser tracker now ports the pure counting logic from AdvancedAIProject;
+MediaPipe still performs inference locally. It does not run the Python YOLO model.
+Curls count each arm independently; the displayed total is left plus right, so a
+simultaneous curl adds two. Squats use one combined counter: both visible legs
+must agree on an endpoint, and a visibility-side change abandons the partial cycle.
+Arm-circle tracking is unchanged. Full cycles use time-based smoothing, 120 ms
+endpoint holds and a minimum 250 ms bent-to-extended return.
+
+After selecting a camera or clip, choose **Calibrate range**, start tracking, and
+perform a slow practice cycle with the same anatomical side continuously visible.
+Choose **Use this range** to apply that side's demonstrated range to both sides.
+At least 30 valid measurements and 60 degrees of motion are required. Practice
+reps are excluded; saving is disabled during calibration. Cancel preserves the
+previous thresholds. New session resets calibration. Counts measure threshold
+cycles, not validated exercise technique. Entire-pose loss resets partial cycles;
+individual arm dropouts of up to 450 ms preserve phase but cannot provide endpoint
+hold time.
+
+Saved summaries optionally include `counts_by_side`, `counting_method` and
+`thresholds` (including `calibrated`). Existing summaries remain supported.
+The feedback agent reports per-arm counts and calibrated-range provenance.
+
+## Local model assets
+
+The Lite model is bundled at `frontend/public/models/pose_landmarker_lite.task`.
+The `predev` and `prebuild` npm hooks copy WASM assets from the installed
+`@mediapipe/tasks-vision` package, keeping the runtime version aligned with its
+JavaScript wrapper. Runtime loading no longer depends on Google or jsDelivr.
+Run `npm run dev` or `npm run build` through npm so these hooks execute.
+
+### Curl counting correction
+
+Curls use the prototype's 90° bent / 145° extended thresholds and aspect-corrected
+2D shoulder/elbow/wrist angles. Inferred world-depth angles can disagree with
+visible elbow flexion, particularly in frontal views. Squat geometry and the
+full-cycle requirement remain unchanged. Per-arm stage messages now identify the
+next endpoint; the video badge distinguishes measuring from missing joints.
+Regression tests cover an 80° curl and conflicting image/world geometry.

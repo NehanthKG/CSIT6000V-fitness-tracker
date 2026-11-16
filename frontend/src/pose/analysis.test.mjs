@@ -95,3 +95,103 @@ test('invalid numerical landmark snapshots are omitted without inventing coordin
   analyzer.sample(frame, undefined, 1, 0)
   assert.equal(analyzer.summary('webcam').landmark_samples.length, 0)
 })
+
+function bilateral(analyzer, sequence, move = 'Bicep curl', start = 0) {
+  let time = start
+  for (const [left, right] of sequence) for (let n = 0; n < 16; n++) {
+    const frame = left === null ? points(175, move, 'left', 0) : points(left, move)
+    if (right !== null) {
+      const other = points(right, move, 'right')
+      other.forEach((point, i) => { if (point.visibility) frame[i] = point })
+    }
+    analyzer.sample(frame, undefined, 1, time); time += 80
+  }
+  return time
+}
+test('alternating and simultaneous curls preserve independent arm totals', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  bilateral(a, [[175,175],[30,175],[175,175],[175,30],[175,175],[30,30],[175,175]])
+  assert.deepEqual(a.summary('webcam').counts_by_side, {left: 2, right: 2})
+  assert.equal(a.reading.reps, 4)
+})
+test('squats require agreement and abandon partial cycles on visible limb change', () => {
+  const a = new PoseAnalyzer('Squat')
+  bilateral(a, [[175,175],[75,175],[175,175]], 'Squat')
+  assert.equal(a.reading.reps, 0)
+  const b = new PoseAnalyzer('Squat')
+  bilateral(b, [[175,null],[75,null],[null,175]], 'Squat')
+  assert.equal(b.reading.reps, 0)
+})
+test('calibration excludes practice reps and persists accepted thresholds', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  a.startCalibration()
+  assert.throws(() => a.finishCalibration(), /30 frames/)
+  const next = bilateral(a, [[175,175],[30,30],[175,175]])
+  assert.equal(a.reading.reps, 0)
+  a.finishCalibration()
+  bilateral(a, [[175,175],[30,30],[175,175]], 'Bicep curl', next)
+  assert.equal(a.reading.reps, 2)
+  assert.equal(a.summary('webcam').thresholds.calibrated, true)
+})
+test('calibration rejects tiny range and cancellation preserves completed reps', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  let next = bilateral(a, [[175,null],[30,null],[175,null]])
+  a.startCalibration()
+  next = bilateral(a, [[175,null],[165,null],[175,null]], 'Bicep curl', next)
+  assert.throws(() => a.finishCalibration(), /60°/)
+  a.cancelCalibration()
+  bilateral(a, [[175,null]], 'Bicep curl', next)
+  assert.equal(a.reading.reps, 1)
+  assert.equal(a.reading.calibrating, false)
+})
+
+test('time-based counters tolerate short gaps but reject long occlusions and spikes', async () => {
+  const { RepCounter } = await import('./counter.ts')
+  for (const fps of [15, 30, 60]) {
+    const counter = new RepCounter(90, 145)
+    let t = 0
+    const hold = value => { for (let i = 0; i < fps; i++) { counter.update(value, t); t += 1 / fps } }
+    hold(175); hold(70)
+    counter.update(null, t); t += .2
+    hold(175)
+    assert.equal(counter.count, 1)
+    hold(70); counter.update(null, t); t += 1; hold(175)
+    assert.equal(counter.count, 1)
+    counter.update(30, t); t += 1 / fps; hold(175)
+    assert.equal(counter.count, 1)
+  }
+})
+
+test('curl counts an 80-degree bend using prototype thresholds', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  cycle(a, [170, 80, 170], 'Bicep curl')
+  assert.equal(a.reading.reps, 1)
+  assert.equal(a.summary('webcam').thresholds.bent, 90)
+})
+test('curl uses aspect-corrected image angles even when inferred world depth disagrees', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  let time = 0
+  for (const [imageAngle, worldAngle] of [[175, 142], [50, 81], [175, 142]]) {
+    for (let i = 0; i < 16; i++) {
+      const frame = points(imageAngle, 'Bicep curl')
+      frame.forEach(p => { p.x /= 16 / 9 })
+      const world = points(worldAngle, 'Bicep curl').map(p => ({ ...p, z: 0 }))
+      a.sample(frame, world, 16 / 9, time); time += 80
+    }
+  }
+  assert.equal(a.reading.reps, 1)
+  assert.equal(a.reading.angle, 175)
+})
+test('curl instructions expose each phase and missing joints', () => {
+  const a = new PoseAnalyzer('Bicep curl')
+  let time = cycle(a, [110], 'Bicep curl')
+  assert.match(a.reading.arms.left.instruction, /Straighten past 145/)
+  time = cycle(a, [175], 'Bicep curl', time)
+  assert.match(a.reading.arms.left.instruction, /Bend below 90/)
+  cycle(a, [75], 'Bicep curl', time)
+  assert.match(a.reading.arms.left.instruction, /Bend reached/)
+  assert.equal(a.reading.arms.right.angle, null)
+  a.missing()
+  assert.equal(a.reading.arms.left.angle, null)
+  assert.match(a.reading.arms.left.instruction, /Show shoulder/)
+})

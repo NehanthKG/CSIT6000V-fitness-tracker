@@ -104,12 +104,32 @@ class LandmarkSample(Model):
     landmarks: list[PoseLandmark] = Field(min_length=33, max_length=33)
 
 
+class SideCounts(Model):
+    left: int = Field(ge=0, le=10000)
+    right: int = Field(ge=0, le=10000)
+
+
+class PoseThresholds(Model):
+    bent: float = Field(gt=0, lt=180)
+    extended: float = Field(gt=0, lt=180)
+    calibrated: bool = False
+
+    @model_validator(mode='after')
+    def ordered(self):
+        if self.bent >= self.extended:
+            raise ValueError('Bent threshold must be below extended threshold')
+        return self
+
+
 class PoseSession(Model):
     exercise: Literal['Squat', 'Bicep curl', 'Arm circles']
     duration_seconds: float = Field(gt=0, le=18000)
     reps: int = Field(ge=0, le=10000)
     analyzed_frames: int = Field(ge=1, le=2000000)
     average_confidence: float = Field(ge=0, le=1)
+    counts_by_side: Optional[SideCounts] = None
+    counting_method: Optional[Literal['full_cycles_per_arm_sum', 'bilateral_full_cycles']] = None
+    thresholds: Optional[PoseThresholds] = None
     range_of_motion: PoseRange
     form_cues: list[str] = Field(default_factory=list, max_length=30)
     source: Literal['webcam', 'upload']
@@ -117,6 +137,8 @@ class PoseSession(Model):
 
     @model_validator(mode='after')
     def sample_timing(self):
+        if self.counts_by_side and (self.exercise != 'Bicep curl' or self.reps != self.counts_by_side.left + self.counts_by_side.right):
+            raise ValueError('Curl total must equal left plus right counts')
         times = [sample.time_seconds for sample in self.landmark_samples]
         if times != sorted(times) or any(t > self.duration_seconds for t in times):
             raise ValueError('Landmark samples must be chronological and within the session duration')

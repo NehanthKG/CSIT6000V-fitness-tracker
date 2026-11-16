@@ -1,3 +1,4 @@
+import { RepCounter, Calibration } from './counter.ts'
 export type Move = 'Squat' | 'Bicep curl' | 'Arm circles'
 export type Point = { x: number; y: number; z?: number; visibility?: number; presence?: number }
 export type LandmarkSample = { time_seconds: number; landmarks: { x: number; y: number; z: number; visibility: number }[] }
@@ -10,9 +11,13 @@ export type PoseSummary = {
   range_of_motion: { min: number; max: number }
   form_cues: string[]
   landmark_samples: LandmarkSample[]
+  counts_by_side?: { left: number; right: number }
+  counting_method?: string
+  thresholds?: { bent: number; extended: number; calibrated: boolean }
   source: 'webcam' | 'upload'
 }
-export type Reading = { reps: number; angle: number | null; confidence: number; side: 'left' | 'right' | null; feedback: string; frames: number; seconds: number }
+export type ArmReading = { angle: number | null; instruction: string }
+export type Reading = { arms?: { left: ArmReading; right: ArmReading }; leftReps?: number; rightReps?: number; calibrating?: boolean; reps: number; angle: number | null; confidence: number; side: 'left' | 'right' | null; feedback: string; frames: number; seconds: number }
 const VISIBILITY = 0.65
 const SIDES = { left: { shoulder: 11, elbow: 13, wrist: 15, hip: 23, knee: 25, ankle: 27 }, right: { shoulder: 12, elbow: 14, wrist: 16, hip: 24, knee: 26, ankle: 28 } }
 
@@ -35,10 +40,11 @@ export class PoseAnalyzer {
   private durationMs = 0
   private previousTime: number | null = null
   private side: 'left' | 'right' | null = null
-  private smoothed: number | null = null
-  private phase: 'unarmed' | 'extended' | 'contracted' = 'unarmed'
-  private heldSince: number | null = null
-  private phaseStarted = 0
+  private counters: Record<'left' | 'right' | 'combined', RepCounter>
+  private visibleSource = ''
+  private calibration: Calibration | null = null
+  private calibrationSide: 'left' | 'right' | null = null
+  private calibrated = false
   private previousTheta: number | null = null
   private circleStarted = 0
   private rotation = 0
@@ -50,15 +56,40 @@ export class PoseAnalyzer {
   private lastSnapshotMs = -Infinity
   reading: Reading = { reps: 0, angle: null, confidence: 0, side: null, feedback: 'Keep the whole movement in frame in good lighting.', frames: 0, seconds: 0 }
 
-  constructor(exercise: Move) { this.exercise = exercise }
+  constructor(exercise: Move) {
+    this.exercise = exercise
+    const bent = exercise === 'Squat' ? 100 : 90, extended = exercise === 'Squat' ? 155 : 145
+    this.counters = { left: new RepCounter(bent, extended), right: new RepCounter(bent, extended), combined: new RepCounter(bent, extended) }
+  }
+
+  startCalibration() {
+    if (this.exercise === 'Arm circles') return
+    this.calibration = new Calibration(); this.calibrationSide = null; this.resetMotion()
+    this.reading = { ...this.reading, calibrating: true, feedback: 'Perform a slow practice cycle with one side continuously visible, then use this range.' }
+  }
+
+  finishCalibration() {
+    if (!this.calibration) return
+    const thresholds = this.calibration.thresholds()
+    for (const counter of Object.values(this.counters)) Object.assign(counter, thresholds)
+    this.calibration = null; this.calibrationSide = null; this.calibrated = true; this.resetMotion()
+    this.reading = { ...this.reading, calibrating: false, feedback: 'Range applied to both sides. Extend to begin counting; practice repetitions were excluded.' }
+  }
+
+  cancelCalibration() {
+    this.calibration = null; this.calibrationSide = null; this.resetMotion()
+    this.reading = { ...this.reading, calibrating: false, feedback: 'Calibration cancelled. Extend to begin counting.' }
+  }
 
   private resetMotion() {
-    this.phase = 'unarmed'; this.smoothed = null; this.heldSince = null; this.previousTheta = null; this.rotation = 0
+    Object.values(this.counters).forEach(counter => counter.reset())
+    this.visibleSource = ''; this.previousTheta = null; this.rotation = 0
   }
 
   missing(): Reading {
     this.resetMotion(); this.previousTime = null
-    this.reading = { ...this.reading, angle: null, confidence: 0, feedback: 'Move into view. Keep the working joints visible in good lighting.' }
+    const instruction = 'Show shoulder, elbow and wrist together.'
+    this.reading = { ...this.reading, arms: { left: { angle: null, instruction }, right: { angle: null, instruction } }, angle: null, confidence: 0, feedback: this.exercise === 'Squat' ? 'Show your hip, knee and ankle together.' : instruction }
     return this.reading
   }
 
@@ -72,7 +103,8 @@ export class PoseAnalyzer {
     const chosen = this.side && sideConfidence(this.side) >= VISIBILITY ? this.side : best
     const visible = sideConfidence(chosen)
     if (visible < VISIBILITY) return this.missing()
-    if (this.side !== chosen) { this.side = chosen; this.resetMotion() }
+    if (this.side !== chosen && this.exercise === 'Arm circles') this.resetMotion()
+    this.side = chosen
     if (this.previousTime !== null) {
       const delta = timestamp - this.previousTime
       if (delta < 0 || delta > 500) this.resetMotion()
@@ -94,6 +126,7 @@ export class PoseAnalyzer {
     const coord = (index: number): Point => world?.[index] && Number.isFinite(world[index].z) ? world[index] : { x: points[index].x * aspect, y: points[index].y, z: 0 }
     let currentAngle: number
     let cue = ''
+    let arms: Reading['arms']
     if (this.exercise === 'Arm circles') {
       // Frontal image plane measures shoulder-relative rotation, not depth motion.
       const dx = (points[s.wrist].x - points[s.shoulder].x) * aspect
@@ -121,41 +154,66 @@ export class PoseAnalyzer {
       }
       currentAngle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360
     } else {
-      const raw = this.exercise === 'Squat' ? jointAngle(coord(s.hip), coord(s.knee), coord(s.ankle)) : jointAngle(coord(s.shoulder), coord(s.elbow), coord(s.wrist))
-      if (!Number.isFinite(raw)) return this.missing()
-      this.smoothed = this.smoothed === null ? raw : this.smoothed * 0.6 + raw * 0.4
-      currentAngle = this.smoothed
-      const extended = this.exercise === 'Squat' ? 155 : 145
-      const contracted = this.exercise === 'Squat' ? 100 : 60
-      const atTarget = this.phase === 'extended' ? currentAngle < contracted : currentAngle > extended
-      if (atTarget) {
-        this.heldSince ??= timestamp
-        if (timestamp - this.heldSince >= 100) {
-          if (this.phase === 'extended') { this.phase = 'contracted'; this.phaseStarted = timestamp }
-          else {
-            if (this.phase === 'contracted' && timestamp - this.phaseStarted >= 300 && timestamp - this.lastRep >= 700) { this.reps++; this.lastRep = timestamp }
-            this.phase = 'extended'
-          }
-          this.heldSince = null
+      const measure = (side: 'left' | 'right'): number | null => {
+        if (sideConfidence(side) < VISIBILITY) return null
+        const indices = required(side)
+        if (indices.some(i => points[i].x <= 0 || points[i].x >= 1 || points[i].y <= 0 || points[i].y >= 1)) return null
+        // Match AdvancedAIProject's pixel-plane curl geometry. Monocular world
+        // depth can report a visibly straight arm as bent in a frontal view.
+        const coordinates = indices.map(i => this.exercise === 'Bicep curl'
+          ? { x: points[i].x * aspect, y: points[i].y, z: 0 } : coord(i))
+        const value = jointAngle(...coordinates as [Point, Point, Point])
+        return Number.isFinite(value) ? value : null
+      }
+      const values = { left: measure('left'), right: measure('right') }
+      const valid = Object.values(values).filter((v): v is number => v !== null)
+      if (!valid.length) return this.missing()
+      currentAngle = values[chosen] ?? valid[0]
+      if (this.calibration) {
+        this.calibrationSide ??= chosen
+        this.calibration.add(values[this.calibrationSide])
+        cue = `Practice slowly with your ${this.calibrationSide} side visible. This range will apply to both sides; practice reps are excluded.`
+      } else if (this.exercise === 'Bicep curl') {
+        this.counters.left.update(values.left, timestamp / 1000)
+        this.counters.right.update(values.right, timestamp / 1000)
+        this.reps = this.counters.left.count + this.counters.right.count
+        const armReading = (side: 'left' | 'right'): ArmReading => {
+          const counter = this.counters[side], angle = values[side]
+          const instruction = angle === null ? 'Show shoulder, elbow and wrist together.'
+            : counter.phase === 'find_start' ? `Straighten past ${Math.round(counter.extended)}° and briefly hold to start.`
+            : counter.phase === 'ready' ? `Bend below ${Math.round(counter.bent)}° and briefly hold.`
+            : `Bend reached — straighten past ${Math.round(counter.extended)}° to finish.`
+          return { angle: angle === null ? null : Math.round(angle), instruction }
         }
-      } else this.heldSince = null
-      cue = this.exercise === 'Squat'
-        ? this.phase === 'unarmed' ? 'Stand comfortably tall to begin, then lower with control.' : this.phase === 'contracted' ? 'Rise with control to finish the repetition.' : 'Lower your hips at a comfortable depth, keeping your whole body in view.'
-        : this.phase === 'unarmed' ? 'Begin with your arm comfortably extended.' : this.phase === 'contracted' ? 'Lower slowly to complete the curl.' : 'Curl with control and keep your upper arm steady.'
-      if (this.exercise === 'Bicep curl') {
+        arms = { left: armReading('left'), right: armReading('right') }
+        cue = `${chosen === 'left' ? 'Left' : 'Right'} arm: ${arms[chosen].instruction}`
+      } else {
+        const source = Object.keys(values).filter(side => values[side as 'left' | 'right'] !== null).join('+')
+        const counter = this.counters.combined
+        if (this.visibleSource && source !== this.visibleSource) counter.reset()
+        this.visibleSource = source
+        const value = valid.every(v => v >= counter.extended) ? Math.min(...valid)
+          : valid.every(v => v <= counter.bent) ? Math.max(...valid) : (counter.bent + counter.extended) / 2
+        counter.update(value, timestamp / 1000)
+        this.reps = counter.count
+        cue = 'Stand tall, lower, then stand tall again. Both visible legs must reach each endpoint together.'
+      }
+      if (this.exercise === 'Bicep curl' && !this.calibration) {
         const shoulder = points[s.shoulder], elbow = points[s.elbow], hip = points[s.hip]
         const torso = hip ? Math.hypot((hip.x - shoulder.x) * aspect, hip.y - shoulder.y) : 0
-        if (confidence(hip) >= VISIBILITY && torso > 0 && Math.abs(elbow.x - shoulder.x) * aspect / torso > 0.45) cue = 'Bring your elbow closer to your side and reduce swinging.'
+        if (confidence(hip) >= VISIBILITY && torso > 0 && Math.abs(elbow.x - shoulder.x) * aspect / torso > 0.45) cue += ' Keep your upper arm steady.'
       }
     }
     this.minAngle = Math.min(this.minAngle, currentAngle); this.maxAngle = Math.max(this.maxAngle, currentAngle)
     this.cues.add(cue)
-    this.reading = { reps: this.reps, angle: Math.round(currentAngle), confidence: visible, side: chosen, feedback: cue, frames: this.frames, seconds: this.durationMs / 1000 }
+    this.reading = { arms, leftReps: this.counters.left.count, rightReps: this.counters.right.count, calibrating: this.calibration !== null, reps: this.reps, angle: Math.round(currentAngle), confidence: visible, side: chosen, feedback: cue, frames: this.frames, seconds: this.durationMs / 1000 }
     return this.reading
   }
 
   summary(source: 'webcam' | 'upload'): PoseSummary {
     return {
+      ...(this.exercise === 'Arm circles' ? {} : { counting_method: this.exercise === 'Bicep curl' ? 'full_cycles_per_arm_sum' : 'bilateral_full_cycles', thresholds: { bent: this.counters.combined.bent, extended: this.counters.combined.extended, calibrated: this.calibrated } }),
+      ...(this.exercise === 'Bicep curl' ? { counts_by_side: { left: this.counters.left.count, right: this.counters.right.count } } : {}),
       exercise: this.exercise, duration_seconds: Math.max(1, Number((this.durationMs / 1000).toFixed(3))), reps: this.reps,
       analyzed_frames: this.frames, average_confidence: this.frames ? Number((this.confidenceSum / this.frames).toFixed(3)) : 0,
       range_of_motion: { min: Number.isFinite(this.minAngle) ? Math.round(this.minAngle) : 0, max: Number.isFinite(this.maxAngle) ? Math.round(this.maxAngle) : 0 },

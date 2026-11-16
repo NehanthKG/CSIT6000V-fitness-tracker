@@ -17,3 +17,6 @@ frontend/*.tsbuildinfo
 backend/.env
 **/__pycache__/
 .pytest_cache/
+
+# Copied from the installed MediaPipe package before dev/build
+frontend/public/mediapipe/wasm/

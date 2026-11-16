@@ -13,7 +13,7 @@ type Props = {
 type AgentFeedback = { source: string; output: { summary?: string; observations?: string[]; suggestions?: string[]; confidence_note?: string } }
 const MOVES: Move[] = ['Squat', 'Bicep curl', 'Arm circles']
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
-const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+const MODEL = '/models/pose_landmarker_lite.task'
 
 export default function PoseCoach({ onLog, onSessionSaved }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -100,7 +100,7 @@ export default function PoseCoach({ onLog, onSessionSaved }: Props) {
     setLoading(true); setError('')
     initialization.current = (async () => {
       try {
-        const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm')
+        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm')
         let task: PoseLandmarker
         const options = { runningMode: 'VIDEO' as const, numPoses: 1, minPoseDetectionConfidence: 0.6, minPosePresenceConfidence: 0.6, minTrackingConfidence: 0.6 }
         try { task = await PoseLandmarker.createFromOptions(vision, { ...options, baseOptions: { modelAssetPath: MODEL, delegate: 'GPU' } }) }
@@ -108,8 +108,9 @@ export default function PoseCoach({ onLog, onSessionSaved }: Props) {
         if (!mounted.current) { task.close(); return null }
         taskRef.current = task
         return task
-      } catch {
-        if (mounted.current) setError('The pose model could not load. Check your connection and try again. Model files download once from Google and jsDelivr; video frames stay here.')
+      } catch (error) {
+        console.error('Local pose model initialization failed:', error)
+        if (mounted.current) setError('The pose tracker could not initialize. Reload the page and try again. If this persists, restart the app with npm run dev and check the browser console for the loading error.')
         return null
       } finally {
         initialization.current = null
@@ -212,7 +213,7 @@ export default function PoseCoach({ onLog, onSessionSaved }: Props) {
   }
 
   async function saveSession() {
-    if (saving || saved || !sourceRef.current) return
+    if (saving || saved || analyzerRef.current.reading.calibrating || !sourceRef.current) return
     pause(); setSaving(true); setError('')
     try {
       const summary = savedSummaryRef.current ?? analyzerRef.current.summary(sourceRef.current)
@@ -221,7 +222,7 @@ export default function PoseCoach({ onLog, onSessionSaved }: Props) {
         const result = await api.post<{ id: number }>('/api/pose-sessions', summary)
         savedIdRef.current = result.id; savedSummaryRef.current = summary
       }
-      await onLog(summary.exercise, Math.max(1, Math.ceil(summary.duration_seconds / 60)), effort, `${summary.reps} reps; ${Math.round(summary.average_confidence * 100)}% landmark confidence; ${summary.range_of_motion.min}–${summary.range_of_motion.max}° angle range; pose session #${savedIdRef.current}`)
+      await onLog(summary.exercise, Math.max(1, Math.ceil(summary.duration_seconds / 60)), effort, `${summary.reps} reps${summary.counts_by_side ? ` (left ${summary.counts_by_side.left}, right ${summary.counts_by_side.right}; total arm cycles)` : ''}; ${Math.round(summary.average_confidence * 100)}% landmark confidence; ${summary.range_of_motion.min}–${summary.range_of_motion.max}° angle range; pose session #${savedIdRef.current}`)
       if (mounted.current) { setSaved(true); void onSessionSaved?.() }
     } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : 'The session could not be saved. Please retry.') }
     finally { if (mounted.current) setSaving(false) }
@@ -250,16 +251,29 @@ export default function PoseCoach({ onLog, onSessionSaved }: Props) {
       <div className="tracker-video-frame" style={{ aspectRatio: aspect, width: `min(100%, ${aspect * 500}px)`, display: source ? undefined : 'none' }}>
         <video ref={videoRef} muted playsInline preload="metadata" aria-label={source === 'webcam' ? 'Live movement camera' : 'Movement clip'} onLoadedMetadata={() => { const v = videoRef.current; if (v?.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight); if (v && Number.isFinite(v.duration)) setClipDuration(v.duration) }} onEnded={pause} onError={() => { if (sourceRef.current) { pause(); setError('This video format could not be opened. Try an MP4 or WebM clip.') } }} />
         <canvas ref={canvasRef} className="tracker-overlay" aria-hidden="true" />
-        <span className={`tracker-live ${running ? 'is-running' : ''}`}><i />{running ? 'TRACKING' : 'PAUSED'}</span>
+        <span className={`tracker-live ${running ? 'is-running' : ''}`}><i />{running ? reading.calibrating ? 'CALIBRATING' : reading.angle === null ? 'JOINTS NOT VISIBLE' : 'MEASURING' : 'PAUSED'}</span>
       </div>
       {!source && <div className="tracker-empty"><div className="camera-orbit"><Camera size={29} /></div><strong>Make room to move.</strong><span>Position your whole body in frame for squats.<br />Face sideways for curls, and face the camera for circles.</span><button className="primary-button" disabled={cameraPending || loading} onClick={() => void startCamera()}><Camera size={15} /> Start your camera</button></div>}
-      {loading && <div className="tracker-loading" role="status"><LoaderCircle className="spin" size={24} /><strong>Preparing your pose model…</strong><span>The first load may take a moment.</span></div>}
+      {loading && <div className="tracker-loading" role="status"><LoaderCircle className="spin" size={24} /><strong>Preparing your pose model…</strong><span>Loading the pose model from this app…</span></div>}
     </div>
     {source && <div className="tracker-playback"><button className="primary-button small" disabled={loading || sessionFrozen || (source === 'webcam' && !cameraActive)} onClick={() => running ? pause() : void play()}>{running ? <Pause size={15} /> : <Play size={15} />}{running ? 'Pause' : source === 'upload' && clipTime >= clipDuration && clipDuration > 0 ? 'Replay' : 'Start tracking'}</button>{source === 'upload' && <><input aria-label="Video position; seeking starts a new session" type="range" min={0} max={clipDuration || 1} step={0.1} value={Math.min(clipTime, clipDuration || 1)} disabled={!clipDuration || saving || feedbackBusy} onChange={e => { resetSession(); const seconds = Number(e.target.value); if (videoRef.current) videoRef.current.currentTime = seconds; setClipTime(seconds) }} /><span>{clock(clipTime)} / {clock(clipDuration)}</span></>}<span className="tracker-angle-note">{exercise === 'Arm circles' ? 'Wrist rotation · face camera' : 'Joint angle · side view recommended'}</span></div>}
+    {source && exercise !== 'Arm circles' && <div className="tracker-controls">
+      <button className="quiet-button" disabled={sessionFrozen || feedbackBusy} onClick={() => {
+        try {
+          if (reading.calibrating) analyzerRef.current.finishCalibration()
+          else analyzerRef.current.startCalibration()
+          setReading({ ...analyzerRef.current.reading }); setError('')
+        } catch (e) { setError(e instanceof Error ? e.message : 'Calibration failed.') }
+      }}>{reading.calibrating ? 'Use this range' : 'Calibrate range'}</button>
+      {reading.calibrating && <button className="quiet-button" onClick={() => { analyzerRef.current.cancelCalibration(); setReading({ ...analyzerRef.current.reading }); setError('') }}>Cancel calibration</button>}
+      <span className="tracker-angle-note">{reading.calibrating ? 'Start tracking and perform a slow practice cycle. Keep the same side visible.' : 'Optional: use your demonstrated range for both sides.'}</span>
+    </div>}
+    {exercise === 'Bicep curl' && reading.arms && <div className="tracker-arm-status" aria-label="Curl counting stages">{(['left', 'right'] as const).map(side => <div key={side}><strong>{side === 'left' ? 'Left' : 'Right'} arm · {reading.arms?.[side].angle === null ? 'not visible' : `${reading.arms?.[side].angle}°`}</strong><span>{reading.arms?.[side].instruction}</span></div>)}</div>}
+    {exercise === 'Bicep curl' && <p className="tracker-angle-note">Left arm: {reading.leftReps ?? 0} · Right arm: {reading.rightReps ?? 0} · Total = left + right (a simultaneous curl counts as two).</p>}
     {error && <div className="inline-error" role="alert"><AlertCircle size={16} />{error}</div>}
     <div className="tracker-metrics" aria-label="Movement measurements"><div><strong>{String(reading.reps).padStart(2, '0')}</strong><span>repetitions</span></div><div><strong>{reading.angle === null ? '—' : `${reading.angle}°`}</strong><span>{exercise === 'Squat' ? 'knee angle' : exercise === 'Bicep curl' ? 'elbow angle' : 'wrist rotation'}</span></div><div><strong>{reading.confidence ? `${Math.round(reading.confidence * 100)}%` : '—'}</strong><span>joint visibility</span></div><div><strong>{clock(reading.seconds)}</strong><span>confident tracking</span></div></div>
     <div className="tracker-cue" role="status"><span className={`live-dot ${!running ? 'inactive' : ''}`} /><p>{reading.feedback}</p>{reading.side && <span className="tracker-side">{reading.side} side</span>}</div>
-    <div className="tracker-actions"><button className="quiet-button" disabled={saving || feedbackBusy} onClick={() => resetSession()}><RotateCcw size={14} /> New session</button><label className="tracker-effort">Effort <select value={effort} disabled={saving || saved} onChange={e => setEffort(Number(e.target.value))} aria-label="Perceived effort from 1 to 10">{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}/10</option>)}</select></label><button className="primary-button small" disabled={reading.frames < 10 || saving || saved || feedbackBusy} onClick={() => void saveSession()}>{saving ? <LoaderCircle size={14} className="spin" /> : saved ? <Check size={14} /> : <Check size={14} />}{saving ? 'Saving…' : saved ? 'Session saved' : savedIdRef.current ? 'Retry workout log' : 'Save & log session'}</button></div>
+    <div className="tracker-actions"><button className="quiet-button" disabled={saving || feedbackBusy} onClick={() => resetSession()}><RotateCcw size={14} /> New session</button><label className="tracker-effort">Effort <select value={effort} disabled={saving || saved} onChange={e => setEffort(Number(e.target.value))} aria-label="Perceived effort from 1 to 10">{Array.from({ length: 10 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}/10</option>)}</select></label><button className="primary-button small" disabled={reading.calibrating || reading.frames < 10 || saving || saved || feedbackBusy} onClick={() => void saveSession()}>{saving ? <LoaderCircle size={14} className="spin" /> : saved ? <Check size={14} /> : <Check size={14} />}{saving ? 'Saving…' : saved ? 'Session saved' : savedIdRef.current ? 'Retry workout log' : 'Save & log session'}</button></div>
     {saved && <div className="tracker-agent"><div className="tracker-agent-heading"><div><Sparkles size={16} /><strong>Exercise feedback agent</strong></div><button className="text-link" disabled={feedbackBusy} onClick={() => void getFeedback()}>{feedbackBusy ? 'Reviewing…' : feedback ? 'Review again' : 'Review this session'} {!feedbackBusy && <Sparkles size={13} />}</button></div>{feedback && <div className="tracker-agent-result"><span className="source-pill">{feedback.source === 'local_fallback' ? 'LOCAL REVIEW' : 'AI REVIEW'}</span><p>{feedback.output.summary}</p>{feedback.output.observations?.length ? <ul>{feedback.output.observations.map((text, i) => <li key={i}>{text}</li>)}</ul> : null}{feedback.output.suggestions?.length ? <ul>{feedback.output.suggestions.map((text, i) => <li key={i}>{text}</li>)}</ul> : null}<small>{feedback.output.confidence_note}</small></div>}{feedbackError && <p className="inline-error" role="alert">{feedbackError}</p>}</div>}
     <p className="tracker-disclaimer">Repetitions are estimates from visible joints. Camera position affects accuracy. Saving shares session measurements and up to eight numerical landmark snapshots with the backend and feedback agent.</p>
   </section>
