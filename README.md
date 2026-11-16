@@ -93,16 +93,13 @@ LLM_MODEL=YOUR_MODEL_NAME
 LLM_API_KEY=
 ```
 
-Course TACC Qwen service:
+### Use course TACC Qwen
 
-```dotenv
-QWEN_BASE_URL=http://CURRENT_TACC_NODE:8000/v1
-QWEN_MODEL=qwen3.8-27b
-```
+The dashboard, webcam and video analysis, FastAPI backend, agents, and SQLite database run on your computer. TACC supplies Qwen inference through a GPU job. Start the local app with the setup above and follow the course connection steps. [TACC setup guide](backend/tacc/README.md)
 
-Use the `SERVICE_BASE_URL` printed by the running course service, including `/v1`. The address changes between service jobs, and the machine running FastAPI must be able to reach the TACC node. Generic `LLM_*` configuration takes precedence when set. See [configuration and API reference](docs/API.md) and [TACC service instructions](backend/tacc/README.md).
+Run `python3 scripts/dev.py --tacc-job SERVICE_JOB_ID` through a TACC gateway that permits SSH forwarding. Replace `SERVICE_JOB_ID` with the running GPU job ID. A directly reachable endpoint can also be configured as `QWEN_BASE_URL` in `backend/.env`. Use `/api/model/status` to verify the connection. [Connect the local app](backend/tacc/README.md#4-connect-your-local-app)
 
-Keep `.env`, credentials, and live node addresses private. Model configuration and live reachability are distinct; use the model connection check and inspect the source shown on each result. Failed or invalid model responses can fall back to deterministic local agents.
+The guide also includes an optional CPU validation job. It checks all five agents from inside TACC using synthetic data and saves a downloadable JSON result.
 
 ## Build and verify
 

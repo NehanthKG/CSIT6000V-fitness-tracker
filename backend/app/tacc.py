@@ -30,7 +30,7 @@ def configuration() -> dict:
     return {'configured': bool(base and model and valid), 'model': model, 'provider': 'openai_compatible' if generic else 'tacc_qwen', 'base_url': base, 'valid_url': bool(valid), 'source': 'llm' if generic else 'tacc_qwen'}
 
 
-def ask(messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 1600, timeout_override: float = None) -> str:
+def ask(messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 1600, timeout_override: float = None, structured_schema: dict = None) -> str:
     cfg = configuration()
     if not cfg['configured']:
         raise ModelUnavailable('A valid LLM_BASE_URL or QWEN_BASE_URL and model must be configured')
@@ -43,6 +43,8 @@ def ask(messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens:
     # Qwen's extension is not sent to generic providers that may reject unknown fields.
     if cfg['provider'] == 'tacc_qwen':
         payload['chat_template_kwargs'] = {'enable_thinking': False}
+        if structured_schema is not None:
+            payload['structured_outputs'] = {'json': structured_schema}
     headers = {'Content-Type': 'application/json'}
     key = os.getenv('LLM_API_KEY', '').strip()
     if key:
