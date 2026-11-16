@@ -47,8 +47,9 @@ def main() -> int:
         return 1
 
     api_command = [str(PYTHON), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"]
-    if (BACKEND / ".env").exists():
-        api_command += ["--env-file", str(BACKEND / ".env")]
+    for env_file in (ROOT / ".env.local", ROOT / ".env", BACKEND / ".env"):
+        if env_file.exists():
+            api_command += ["--env-file", str(env_file)]
     ui_command = [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort"]
     processes: list[subprocess.Popen] = []
 
@@ -57,7 +58,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, interrupted)
     print("Starting FitPilot. UI: http://127.0.0.1:5173  API docs: http://127.0.0.1:8000/docs", flush=True)
-    print("Press Ctrl+C to stop both services. Your SQLite database will be kept.", flush=True)
+    print("Press Ctrl+C to stop both services. Saved database records will be kept.", flush=True)
     try:
         for command, directory in ((api_command, BACKEND), (ui_command, FRONTEND)):
             processes.append(subprocess.Popen(command, cwd=directory, start_new_session=(os.name == "posix")))
