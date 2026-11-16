@@ -15,5 +15,14 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 export QWEN_CACHE_HOME="$TACC_USERDIR/CSIT6000V-project-cache"
 mkdir -p -m 700 "$QWEN_CACHE_HOME"
-printf 'SERVICE_BASE_URL=http://%s:8000/v1\n' "$(hostname)"
+service_host=$(hostname)
+# TACC names IPv4 compute nodes with hyphens. The course runtime may lack DNS for them.
+if [[ "$service_host" =~ ^([0-9]{1,3})-([0-9]{1,3})-([0-9]{1,3})-([0-9]{1,3})$ ]]; then
+    octets=("${BASH_REMATCH[@]:1}")
+    if (( 10#${octets[0]} <= 255 && 10#${octets[1]} <= 255 && 10#${octets[2]} <= 255 && 10#${octets[3]} <= 255 )); then
+        printf -v service_host '%d.%d.%d.%d' "$((10#${octets[0]}))" "$((10#${octets[1]}))" \
+            "$((10#${octets[2]}))" "$((10#${octets[3]}))"
+    fi
+fi
+printf 'SERVICE_BASE_URL=http://%s:8000/v1\n' "$service_host"
 bash "$QWEN_PROJECT_ROOT/serve.sh"

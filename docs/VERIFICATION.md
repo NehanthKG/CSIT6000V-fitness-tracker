@@ -27,6 +27,20 @@ The original development database was not used for automated test writes or rese
 
 Browser automation could not open the local preview because the browser permission gate rejected the local origin. Consequently, no successful visual inspection, browser interaction pass, live camera permission test, hardware MediaPipe inference, or real-clip accuracy check is claimed. Successful process startup, TestClient HTTP checks, and component server rendering do not replace those browser checks.
 
-Live TACC/OpenAI-compatible inference remains unverified without a reachable configured service. A valid model URL in `/api/health` reports configuration only. Use `/api/model/status` and inspect each result's source after configuring the intended service.
+The local dashboard needs a route from FastAPI to the model service for interactive inference. A valid model URL in `/api/health` reports configuration only. Use `/api/model/status` and inspect each result's source after configuring the intended service. The SSH forwarding route tested below provides that connection on the configured TACC account.
 
 The course proposal's labeled video evaluation and baseline comparisons remain separate work. See [QA.md](QA.md) for manual checks and the proposed evaluation matrix. No clinical or rep-accuracy benchmark is implied by the automated results above.
+
+## TACC batch verification on 2026-11-14
+
+GPU job `29026` served `qwen3.8-27b`. CPU job `29032` ran the FitPilot coordinator against that service with the seeded demo profile. The downloaded result reported `succeeded`, five `tacc_qwen` stages, and seven passing plan checks. The resulting draft included four workouts and 21 meal servings and took 47.266 seconds to generate.
+
+The course runtime could reach the service at its private IPv4 address. The laptop could neither resolve the compute hostname nor reach the private address, so live inference was verified through the CPU job. The batch uses UTC to run in the course runtime without IANA timezone data. See the [TACC setup guide](../backend/tacc/README.md) to reproduce the run.
+
+The backend suite passed 23 tests after adding the batch client. The batch tests verify the staged files, HTTP request format, sources, schedule assignment, and preservation of the result on fallback. The supplied job scripts also passed Bash syntax checks.
+
+## Local app with TACC inference on 2026-11-14
+
+GPU job `29070` served Qwen. `scripts/dev.py --tacc-job` connected to it through the SDK's configured SSH gateway and bound the forwarding port to `127.0.0.1`. Vite and FastAPI ran on the Mac. The dashboard returned HTTP 200, and `/api/model/status` through the local Vite proxy returned `reachable: true` for `qwen3.8-27b`.
+
+The local FastAPI plan workflow, tested with a temporary SQLite database, used `tacc_qwen` for all five stages and passed all seven plan checks. The backend suite and browser pose analyzer suite passed 23 and nine tests respectively. This check exercised live inference from the local backend without requiring a TACC CPU job or sending webcam video.

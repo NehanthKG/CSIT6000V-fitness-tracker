@@ -47,11 +47,14 @@ class Exercise(Model):
     rest_seconds: int = Field(default=45, ge=0, le=300)
 
 
-class Workout(Model):
-    day: Day
+class WorkoutDraft(Model):
     focus: str = Field(min_length=1, max_length=160)
     duration_minutes: int = Field(ge=10, le=180)
     exercises: list[Exercise] = Field(min_length=1, max_length=8)
+
+
+class Workout(WorkoutDraft):
+    day: Day
 
 
 class Meal(Model):
@@ -162,9 +165,12 @@ class ChatRequest(Model):
     agent_id: Optional[str] = None
 
 
-class GoalResult(Model):
-    summary: str
+class GoalDraft(Model):
+    summary: str = Field(min_length=1, max_length=1000)
     priorities: list[str] = Field(min_length=1, max_length=10)
+
+
+class GoalResult(GoalDraft):
     constraints: list[str] = Field(min_length=1, max_length=20)
     target_sessions: int = Field(ge=1, le=7)
     target_minutes: int = Field(ge=10, le=180)
@@ -173,6 +179,16 @@ class GoalResult(Model):
 class ExerciseResult(Model):
     summary: str
     workouts: list[Workout] = Field(min_length=1, max_length=7)
+
+
+class ExerciseDraft(Model):
+    summary: str
+    workouts: list[WorkoutDraft] = Field(min_length=1, max_length=7)
+
+
+class NutritionDraft(Model):
+    menu_id: str
+    summary: str = Field(min_length=1, max_length=1000)
 
 
 class NutritionResult(Model):

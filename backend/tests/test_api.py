@@ -99,6 +99,7 @@ class FitPilotTests(unittest.TestCase):
     def test_valid_model_stages_are_used_and_source_is_truthful(self):
         ctx = agents.context()
         answers = [json.dumps(agents.fallback(a['id'], ctx)) for a in agents.AGENTS]
+        answers[2] = json.dumps({'menu_id': 'menu_2', 'summary': 'A model-selected catalog menu.'})
         first = json.loads(answers[0])
         first['summary'] = 'A model-authored goal summary.'
         answers[0] = json.dumps(first)
@@ -108,6 +109,8 @@ class FitPilotTests(unittest.TestCase):
         self.assertEqual(ask.call_count, 5)
         self.assertEqual(draft['source'], 'llm')
         self.assertEqual(draft['content']['summary'], 'A model-authored goal summary.')
+        self.assertEqual(draft['steps'][2]['output']['summary'], 'A model-selected catalog menu.')
+        self.assertEqual(draft['content']['meals'], agents.nutrition_options(ctx)['menu_2'])
         self.assertTrue(draft['validation']['valid'])
 
     def test_model_client_openai_compatible_request_contract(self):
