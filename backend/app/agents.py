@@ -206,9 +206,15 @@ def fallback(agent_id: str, ctx: dict) -> dict:
         if not pose:
             return {'summary': 'Record a pose session to get measurement-based feedback.', 'observations': ['No pose session is available.'], 'suggestions': ['Open Form check, choose an exercise and record a short session.'], 'confidence_note': 'No measurements available.', 'metrics': {}}
         confidence = pose['average_confidence']
+        bilateral_notes = []
+        if pose.get('counts_by_side'):
+            counts = pose['counts_by_side']
+            bilateral_notes.append(f"Left arm: {counts['left']}; right arm: {counts['right']}. Total counts individual arm cycles, so a simultaneous curl adds two.")
+        if (pose.get('thresholds') or {}).get('calibrated'):
+            bilateral_notes.append('Counts use a demonstrated calibration range applied to both sides; this is not a form-quality assessment.')
         span = pose['range_of_motion']['max'] - pose['range_of_motion']['min']
         return {'summary': f"Recorded {pose['reps']} {pose['exercise'].lower()} repetitions over {round(pose['duration_seconds'])} seconds.",
-                'observations': [f"{pose['analyzed_frames']} frames analyzed; average visibility {confidence:.0%}.", f"Observed pose angle span: {span:.0f} degrees."] + pose['form_cues'][:5],
+                'observations': [f"{pose['analyzed_frames']} frames analyzed; average visibility {confidence:.0%}.", f"Observed pose angle span: {span:.0f} degrees."] + bilateral_notes + pose['form_cues'][:5],
                 'suggestions': ['Keep your whole body visible and position the camera at a suitable side view.', 'Move smoothly at a comfortable pace and stop if movement hurts.'],
                 'confidence_note': 'Low visibility: these measurements are unreliable. Reposition the camera before using the feedback.' if confidence < 0.65 else 'Pose estimates depend on camera view and do not establish correct technique or diagnose injury.',
                 'metrics': {k: pose[k] for k in ['reps', 'duration_seconds', 'average_confidence', 'range_of_motion', 'analyzed_frames']}}

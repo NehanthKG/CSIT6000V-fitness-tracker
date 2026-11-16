@@ -1,5 +1,6 @@
+import BrandMark from './BrandMark'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, ArrowRight, ArrowUpRight, CalendarDays, Camera, Check, ChevronDown, CircleHelp, Clock3, Dumbbell, Flame, GitBranch, Heart, LayoutDashboard, Leaf, LoaderCircle, MessageCircle, Plus, Salad, Settings2, Sparkles, Target, TrendingUp, X } from 'lucide-react'
+import { Activity, ArrowRight, ArrowUpRight, CalendarDays, Camera, CircleHelp, Check, ChevronDown, Clock3, Dumbbell, Flame, GitBranch, LayoutDashboard, LoaderCircle, MessageCircle, Plus, Salad, Settings2, Sparkles, Target, TrendingUp, X } from 'lucide-react'
 import { api } from './api'
 import PoseCoach from './PoseCoach'
 import AgentStudio, { sourceLabel } from './AgentStudio'
@@ -14,8 +15,8 @@ const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 function shortDate(value: string) { return new Date(value.replace(' ', 'T') + (value.includes('Z') ? '' : 'Z')).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
 function greeting() { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening' }
 
-export default function App() {
-  const [view, setView] = useState<View>('overview')
+export default function App({ initialView = 'overview' }: { initialView?: 'overview' | 'tracker' }) {
+  const [view, setView] = useState<View>(initialView)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [logs, setLogs] = useState<Log[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -108,7 +109,7 @@ export default function App() {
     finally { setChatBusy(false) }
   }
 
-  const sectionTitle: Record<View, string> = { overview: 'Your space', plan: 'Your plan', progress: 'Your progress', profile: 'Your preferences', tracker: 'Form check', agents: 'Your coaching team' }
+  const sectionTitle: Record<View, string> = { overview: 'Your space', plan: 'Your plan', progress: 'Your progress', profile: 'Your preferences', tracker: 'Workout studio', agents: 'Your coaching team' }
   const firstName = profile?.name.split(' ')[0] || 'there'
   const weekDays = useMemo(() => {
     const today = new Date(); const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7))
@@ -118,30 +119,30 @@ export default function App() {
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Activity size={20} strokeWidth={2.6} /></div><span>fitpilot<span className="brand-period">.</span></span></div>
+      <a href="#/" className="brand" aria-label="FitPilot landing page"><div className="brand-mark"><BrandMark size={28}/></div><span>fitpilot<span className="brand-period">.</span></span></a>
       <div className="workspace-label">YOUR WELLNESS SPACE</div>
       <nav className="side-nav" aria-label="Main navigation">
         <button aria-label="Overview" title="Overview" className={view === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setView('overview')}><LayoutDashboard size={18} />Overview</button>
         <button aria-label="My week" title="My week" className={view === 'plan' ? 'nav-item active' : 'nav-item'} onClick={() => setView('plan')}><CalendarDays size={18} />My week{activePlan && <i className="nav-dot" />}</button>
-        <button aria-label="Form check" title="Form check" className={view === 'tracker' ? 'nav-item active' : 'nav-item'} onClick={() => setView('tracker')}><Camera size={18}/>Form check</button>
+        <button aria-label="Workout studio" title="Workout studio" className={view === 'tracker' ? 'nav-item active' : 'nav-item'} onClick={() => setView('tracker')}><Camera size={18}/>Workout studio</button>
         <button aria-label="Coaching team" title="Coaching team" className={view === 'agents' ? 'nav-item active' : 'nav-item'} onClick={() => setView('agents')}><GitBranch size={18}/>Coaching team</button>
         <button aria-label="Progress" title="Progress" className={view === 'progress' ? 'nav-item active' : 'nav-item'} onClick={() => setView('progress')}><TrendingUp size={18} />Progress</button>
         <div className="nav-rule" />
         <button aria-label="Preferences" title="Preferences" className={view === 'profile' ? 'nav-item active' : 'nav-item'} onClick={() => setView('profile')}><Settings2 size={18} />Preferences</button>
       </nav>
       <div className="sidebar-spacer" />
-      <div className="side-tip"><div className="tip-spark"><Sparkles size={17} /></div><strong>Small steps add up.</strong><p>A little movement today is still progress.</p><button onClick={() => setChatOpen(true)}>Talk to your coach <ArrowRight size={13} /></button></div>
+
       <button className="profile-chip" onClick={() => setView('profile')}><div className="avatar">{firstName.slice(0, 1).toUpperCase()}</div><span><strong>{profile?.name || 'Your profile'}</strong><small>{profile?.experience || 'Beginner'} journey</small></span><ChevronDown size={15} /></button>
     </aside>
 
     <main className="main-area">
-      <header className="topbar"><div className="crumb"><span>FitPilot</span><span className="crumb-slash">/</span><strong>{sectionTitle[view]}</strong></div><div className="topbar-actions"><span className={apiReady ? 'connection-pill connected' : 'connection-pill'}><i />{!apiReady ? 'Connecting' : llmReady ? 'LLM configured' : 'Local mode'}</span><button className="help-button" onClick={() => setChatOpen(true)} aria-label="Open AI coach"><CircleHelp size={19} /></button><div className="top-avatar">{firstName.slice(0, 1).toUpperCase()}</div></div></header>
+      <header className="topbar"><div className="crumb"><span>FitPilot</span><span className="crumb-slash">/</span><strong>{sectionTitle[view]}</strong></div><div className="topbar-actions"><span className={apiReady ? 'connection-pill connected' : 'connection-pill'}><i />{!apiReady ? 'Connecting' : llmReady ? 'LLM configured' : 'Local mode'}</span><div className="top-avatar">{firstName.slice(0, 1).toUpperCase()}</div></div></header>
       {error && <div className="notice error-notice"><span>{apiReady ? error : 'The FitPilot API is offline. Start the backend to load your dashboard.'}</span><button onClick={() => void refresh()}>Retry</button></div>}
       {!apiReady ? <div className="loading-state"><LoaderCircle className="spin" size={24} /><span>Getting your space ready…</span><code>cd backend &amp;&amp; uvicorn app.main:app --reload</code></div> : <>
         {view === 'overview' && <div className="page-content">
           <section className="welcome-row"><div><div className="date-eyebrow"><span className="sun-glyph">✳</span>{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase()}</div><h1>{greeting()}, {firstName}<span className="title-dot">.</span></h1><p className="welcome-copy">A little progress goes a long way. Here’s your week, at a glance.</p></div><button className="primary-button" onClick={() => setChatOpen(true)}><Sparkles size={16} />Ask your coach</button></section>
 
-          <section className="hero-card"><div className="hero-copy"><div className="hero-label"><span className="hero-label-dot" />YOUR NEXT GOOD THING</div><h2>{todayWorkout ? `A little ${todayWorkout.focus.toLowerCase()}.` : activePlan ? 'A little room to recover.' : 'Your next good thing starts here.'}</h2><p>{todayWorkout ? `${todayWorkout.duration_minutes} minutes, at your pace. You’ve got this.` : activePlan ? 'No workout is scheduled today. Enjoy a comfortable rest day.' : 'Build a routine that fits your life, one small step at a time.'}</p><div className="hero-actions"><button className="hero-button" disabled={busy} onClick={() => activePlan ? setView('plan') : void generatePlan()}>{activePlan ? 'See my weekly plan' : 'Create my first plan'}<ArrowRight size={15} /></button><span className="hero-note"><Heart size={14} /> Progress over perfection</span></div></div><div className="hero-art"><div className="art-sun"/><div className="art-ring ring-one"/><div className="art-ring ring-two"/><div className="art-leaf leaf-one"><Leaf size={54} /></div><div className="art-leaf leaf-two"><Leaf size={35} /></div><div className="art-ground"/><div className="art-sprout">✳</div><span className="art-caption">MOVE AT YOUR OWN PACE</span></div></section>
+          <section className="fresh-hero"><span className="hero-float float-one" aria-hidden="true">💪</span><span className="hero-float float-two" aria-hidden="true">🥗</span><span className="studio-eyebrow">MAKE SPACE FOR YOURSELF</span><h2>Your health, <strong>simplified.</strong></h2><p>Move with a little guidance. Build a routine that fits.<br/>Your workouts, meals and progress — all together.</p><div className="fresh-hero-actions"><button className="primary-button" onClick={() => setView('tracker')}><Camera size={16}/>Start a workout<ArrowRight size={16}/></button><button className="quiet-button" disabled={busy} onClick={() => activePlan ? setView('plan') : void generatePlan()}>{activePlan ? 'View my plan' : busy ? 'Creating your plan…' : 'Build my plan'}</button></div></section>
 
           <section className="metrics-grid"><Metric icon={<Dumbbell size={17}/>} label="WORKOUTS" value={`${workoutsThisWeek}`} suffix="sessions" trend="this week" tint="sage"/><Metric icon={<Clock3 size={17}/>} label="TIME MOVING" value={`${minutesThisWeek}`} suffix="minutes" trend="this week" tint="lavender"/><Metric icon={<Flame size={17}/>} label="WEEKLY RHYTHM" value={`${Math.min(100, Math.round((workoutsThisWeek / Math.max(1, profile?.weekly_days || 4)) * 100))}`} suffix="%" trend="of your goal" tint="peach"/></section>
 
@@ -161,7 +162,7 @@ export default function App() {
 
         {view === 'progress' && <div className="page-content subpage"><section className="subpage-heading"><div><div className="date-eyebrow"><span className="sun-glyph">✳</span>IT ALL COUNTS</div><h1>Look at you go<span className="title-dot">.</span></h1><p>Progress isn’t a straight line. Here’s what you’ve been building.</p></div><button className="primary-button" onClick={() => setShowLog(true)}><Plus size={16}/>Log activity</button></section><section className="metrics-grid progress-metrics"><Metric icon={<Dumbbell size={17}/>} label="TOTAL SESSIONS" value={`${overview?.stats.total_workouts ?? logs.length}`} suffix="sessions" trend="all time" tint="sage"/><Metric icon={<Clock3 size={17}/>} label="TIME MOVING" value={`${overview?.stats.total_minutes ?? logs.reduce((n, x) => n + x.duration_minutes, 0)}`} suffix="minutes" trend="all time" tint="lavender"/><Metric icon={<Flame size={17}/>} label="AVERAGE EFFORT" value={`${overview?.stats.avg_effort ? Number(overview.stats.avg_effort).toFixed(1) : '—'}`} suffix="/ 10" trend="this week" tint="peach"/></section><div className="content-card progress-card"><div className="card-heading"><div><span className="eyebrow">YOUR RECENT WINS</span><h3>Movement journal</h3></div><span className="journal-count">{logs.length} {logs.length === 1 ? 'entry' : 'entries'}</span></div>{logs.length ? <div className="activity-list large">{logs.map(log => <ActivityRow key={log.id} log={log}/>)}</div> : <div className="progress-empty"><div className="empty-icon"><TrendingUp size={18}/></div><strong>Every beginning is a win.</strong><span>Log a session to start your movement journal.</span><button className="primary-button small" onClick={() => setShowLog(true)}><Plus size={14}/>Log activity</button></div>}</div></div>}
 
-        {view === 'tracker' && <div className="page-content subpage"><section className="subpage-heading"><div><div className="date-eyebrow"><Camera size={15}/>MOVE WITH CONFIDENCE</div><h1>A little form, a lot of progress<span className="title-dot">.</span></h1><p>Practice with your camera or a clip. See your movement, one rep at a time.</p></div></section><PoseCoach onLog={(exercise, minutes, effort, notes) => logWorkout(exercise, minutes, effort, notes)}/><section className="content-card pose-history"><div className="card-heading"><div><span className="eyebrow">MEASUREMENTS THAT MATTER</span><h3>Recent form checks</h3></div><span className="schedule-tag">{poseSessions.length} saved</span></div>{poseSessions.length ? poseSessions.map(session => <div key={session.id} className="pose-history-row"><div className="activity-symbol"><Camera size={17}/></div><div><strong>{session.exercise}</strong><small>{shortDate(session.created_at)} · {session.source === 'webcam' ? 'Camera' : 'Video clip'} · {Math.round(session.duration_seconds)}s analyzed</small></div><span><strong>{session.reps}</strong> reps</span><span>{Math.round(session.average_confidence * 100)}% visibility</span></div>) : <p className="runner-note">Save a form check to make your measurements available to the feedback and adaptation agents.</p>}</section></div>}
+        {view === 'tracker' && <div className="page-content subpage studio-page"><PoseCoach onLog={(exercise, minutes, effort, notes) => logWorkout(exercise, minutes, effort, notes)}/><section className="content-card pose-history"><div className="card-heading"><div><span className="eyebrow">MEASUREMENTS THAT MATTER</span><h3>Recent form checks</h3></div><span className="schedule-tag">{poseSessions.length} saved</span></div>{poseSessions.length ? poseSessions.map(session => <div key={session.id} className="pose-history-row"><div className="activity-symbol"><Camera size={17}/></div><div><strong>{session.exercise}</strong><small>{shortDate(session.created_at)} · {session.source === 'webcam' ? 'Camera' : 'Video clip'} · {Math.round(session.duration_seconds)}s analyzed</small></div><span><strong>{session.reps}</strong> reps</span><span>{Math.round(session.average_confidence * 100)}% visibility</span></div>) : <p className="runner-note">Save a form check to make your measurements available to the feedback and adaptation agents.</p>}</section></div>}
         {view === 'agents' && <AgentStudio onGenerate={() => void generatePlan()} generating={busy} configured={llmReady} revision={revision}/>}
         {view === 'profile' && draft && <Preferences draft={draft} onChange={setDraft} onSave={() => void saveProfile()} busy={busy}/>}
 
